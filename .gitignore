@@ -1,0 +1,8 @@
+# Local source materials and agent metadata are not part of the public website.
+*.docx
+Dify工作流搭建手册.md
+文档审阅/
+.agents/
+.codex/
+.openai/
+.tools/
