@@ -6,14 +6,14 @@
 
 在项目目录运行 `python -m http.server 4173`，然后访问 `http://localhost:4173`。
 
-## 接入 Dify
+## 接入 Dify Chatflow
 
-打开 `dify.config.js`，将 Dify 应用在“发布 → 嵌入网站”中提供的 URL 填入对应栏目：
+网站保留自定义聊天界面，通过 Cloudflare Worker 调用五个 Dify Chatflow。Worker 的五个加密变量为：
 
-- `study`：智能伴学中心
-- `personal`：个性化学习
-- `design`：教学设计辅助
-- `case`：课程案例生成
-- `grading`：作业批改辅助
+- `DIFY_STUDY_KEY`：智能伴学中心
+- `DIFY_PERSONAL_KEY`：个性化学习
+- `DIFY_DESIGN_KEY`：教学设计辅助
+- `DIFY_CASE_KEY`：课程案例生成
+- `DIFY_GRADING_KEY`：作业批改辅助
 
-URL 留空时自动显示内置交互演示；填入后，该栏目会切换为对应的 Dify 聊天界面。
+部署 `worker/index.js` 后，把 Worker 的公开地址填入 `dify.config.js` 的 `apiUrl`。地址留空时，网站保留完整界面并使用内置演示回答。

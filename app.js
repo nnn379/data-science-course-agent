@@ -19,6 +19,7 @@ const roles = {
 };
 
 const app = document.querySelector("#app");
+let isSending = false;
 
 function brand(isLight = false) {
   return `<div class="brand ${isLight ? "brand--light" : ""}"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span><strong>数据科学导论</strong><small>INTRODUCTION TO DATA SCIENCE</small></span></div>`;
@@ -41,7 +42,8 @@ function landing() {
 function workspace(roleId, serviceId) {
   const role = roles[roleId];
   const service = role.services.find((item) => item.id === serviceId) || role.services[0];
-  const difyUrl = window.DIFY_APPS?.[service.id]?.trim();
+  const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
+  isSending = false;
   document.title = `${service.name} · 数据科学导论`;
   app.innerHTML = `<main class="workspace workspace--${roleId}">
     <aside class="sidebar"><div class="sidebar-photo" style="background-image:url('${role.photo}')" aria-hidden="true"></div><div class="sidebar-shade" aria-hidden="true"></div><div class="sidebar-inner">
@@ -51,14 +53,10 @@ function workspace(roleId, serviceId) {
       <nav class="service-nav" aria-label="智能体服务">${role.services.map((item) => `<button class="service-item ${item.id === service.id ? "active" : ""}" data-service="${item.id}"><b>${item.mark}</b><span><strong>${item.name}</strong><small>${item.desc}</small></span><i>→</i></button>`).join("")}</nav>
       <div class="sidebar-foot"><span>DS · COURSE AGENT</span><small>Powered by Dify workflow</small></div>
     </div></aside>
-    <section class="content"><header class="content-header"><button class="mobile-menu" aria-label="打开服务菜单">☰</button><div><p>${role.name} / COURSE SERVICE</p><h1>${service.name}</h1></div><div class="agent-state"><i></i><span>${difyUrl ? "Dify 服务已连接" : "界面演示模式"}</span></div></header>${difyUrl ? difyFrame(difyUrl, service) : demoChat(service)}</section>
+    <section class="content"><header class="content-header"><button class="mobile-menu" aria-label="打开服务菜单">☰</button><div><p>${role.name} / COURSE SERVICE</p><h1>${service.name}</h1></div><div class="header-actions"><button class="reset-chat" type="button" title="清除当前栏目的对话">重新开始</button><div class="agent-state ${apiUrl ? "connected" : ""}"><i></i><span>${apiUrl ? "Dify 服务已连接" : "界面演示模式"}</span></div></div></header>${demoChat(service)}</section>
     <button class="sidebar-mask" aria-label="关闭服务菜单"></button>
   </main>`;
   bindWorkspace(roleId, service);
-}
-
-function difyFrame(url, service) {
-  return `<div class="dify-frame-wrap"><iframe src="${escapeAttribute(url)}" title="${service.name}" allow="microphone" loading="eager"></iframe></div>`;
 }
 
 function demoChat(service) {
@@ -73,6 +71,10 @@ function bindWorkspace(roleId, service) {
   const mask = document.querySelector(".sidebar-mask");
   menu.addEventListener("click", () => layout.classList.add("sidebar-open"));
   mask.addEventListener("click", () => layout.classList.remove("sidebar-open"));
+  document.querySelector(".reset-chat").addEventListener("click", () => {
+    clearConversation(service.id);
+    workspace(roleId, service.id);
+  });
   const form = document.querySelector("#form");
   if (!form) return;
   const input = document.querySelector("#input");
@@ -81,7 +83,9 @@ function bindWorkspace(roleId, service) {
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
 }
 
-function ask(question, service) {
+async function ask(question, service) {
+  if (isSending) return;
+  isSending = true;
   const messages = document.querySelector("#messages");
   document.querySelector(".starter-section")?.remove();
   const user = document.createElement("div");
@@ -89,18 +93,82 @@ function ask(question, service) {
   user.innerHTML = `<div class="bubble user-bubble">${escapeHtml(question)}</div>`;
   messages.append(user);
   const typing = document.querySelector("#typing");
+  const input = document.querySelector("#input");
+  const send = document.querySelector(".send");
+  input.disabled = true;
+  send.disabled = true;
   typing.classList.add("show");
   messages.scrollTop = messages.scrollHeight;
-  window.setTimeout(() => {
+  try {
+    const reply = await getReply(question, service);
     typing.classList.remove("show");
     const answer = document.createElement("div");
     answer.className = "assistant-row";
-    answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.reply}</p></div></div>`;
+    answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(reply)}</p></div></div>`;
     messages.insertBefore(answer, typing);
     messages.scrollTop = messages.scrollHeight;
-  }, 700);
+  } catch (error) {
+    typing.classList.remove("show");
+    const answer = document.createElement("div");
+    answer.className = "assistant-row";
+    answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble error-bubble"><p>${escapeHtml(error.message || "服务暂时不可用，请稍后重试。")}</p></div></div>`;
+    messages.insertBefore(answer, typing);
+  } finally {
+    isSending = false;
+    input.disabled = false;
+    send.disabled = false;
+    input.focus();
+    messages.scrollTop = messages.scrollHeight;
+  }
 }
 
+async function getReply(question, service) {
+  const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
+  if (!apiUrl) {
+    await new Promise((resolve) => window.setTimeout(resolve, 700));
+    return service.reply;
+  }
+
+  const visitorId = getVisitorId();
+  const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      service: service.id,
+      query: question,
+      user: visitorId,
+      conversation_id: getConversation(service.id),
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "Dify 服务暂时不可用，请稍后重试。");
+  if (result.conversation_id) saveConversation(service.id, result.conversation_id);
+  return result.answer || "本次运行没有返回文字内容。";
+}
+
+function getVisitorId() {
+  const key = "ds-course-agent-visitor";
+  let value = localStorage.getItem(key);
+  if (!value) {
+    value = self.crypto?.randomUUID?.() || `visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem(key, value);
+  }
+  return value;
+}
+
+function getConversation(serviceId) {
+  return localStorage.getItem(`ds-course-agent-conversation-${serviceId}`) || "";
+}
+
+function saveConversation(serviceId, conversationId) {
+  localStorage.setItem(`ds-course-agent-conversation-${serviceId}`, conversationId);
+}
+
+function clearConversation(serviceId) {
+  localStorage.removeItem(`ds-course-agent-conversation-${serviceId}`);
+}
+
+function formatText(value) { return escapeHtml(String(value)).replaceAll("\n", "<br>"); }
+
 function escapeHtml(value) { const element = document.createElement("div"); element.textContent = value; return element.innerHTML; }
-function escapeAttribute(value) { return escapeHtml(value).replaceAll('"', "&quot;"); }
 landing();

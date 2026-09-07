@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "data-science-course-agent-api",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-09-07",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ALLOWED_ORIGINS": "https://nnn379.github.io,http://localhost:4173"
+  }
+}
