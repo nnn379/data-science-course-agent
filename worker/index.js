@@ -6,6 +6,8 @@ const SERVICE_KEYS = {
   grading: "DIFY_GRADING_KEY",
 };
 
+const inputFormCache = new Map();
+
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin") || "";
   const allowed = (env.ALLOWED_ORIGINS || "https://nnn379.github.io")
@@ -32,12 +34,80 @@ function json(request, env, body, status = 200) {
   });
 }
 
+function publicAnswer(value) {
+  return String(value || "")
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>\s*/gi, "")
+    .replace(/<think\b[^>]*>[\s\S]*$/gi, "")
+    .trim();
+}
+
+async function buildInputs(service, apiKey, query, user) {
+  let form = inputFormCache.get(service);
+  if (!form) {
+    try {
+      const response = await fetch("https://api.dify.ai/v1/parameters", {
+        headers: { "Authorization": `Bearer ${apiKey}` },
+      });
+      const result = await response.json();
+      form = Array.isArray(result.user_input_form) ? result.user_input_form : [];
+      inputFormCache.set(service, form);
+    } catch {
+      form = [];
+    }
+  }
+
+  const inputs = { query };
+  for (const item of form) {
+    const entry = Object.entries(item || {})[0];
+    if (!entry) continue;
+    const [type, config] = entry;
+    const variable = config?.variable;
+    if (!variable || variable === "query") continue;
+    if (variable === "student_id" || variable === "user_id") {
+      inputs[variable] = user;
+      continue;
+    }
+    if (!config.required && (config.default === undefined || config.default === null || config.default === "")) continue;
+    if (config.default !== undefined && config.default !== null && config.default !== "") {
+      inputs[variable] = config.default;
+    } else if (type === "file-list") {
+      inputs[variable] = [];
+    } else if (type === "select") {
+      inputs[variable] = Array.isArray(config.options) && config.options.length ? config.options[0] : "未填写";
+    } else if (type === "number") {
+      inputs[variable] = Number.isFinite(config.min) ? config.min : 0;
+    } else if (type === "checkbox") {
+      inputs[variable] = false;
+    } else {
+      inputs[variable] = "未填写";
+    }
+  }
+  return inputs;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const headers = corsHeaders(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     if (url.pathname === "/") return json(request, env, { service: "data-science-course-agent", status: "ok" });
+    if (url.pathname === "/api/parameters" && request.method === "GET") {
+      const service = url.searchParams.get("service") || "";
+      const keyName = SERVICE_KEYS[service];
+      if (!keyName) return json(request, env, { error: "未知的课程服务。" }, 400);
+      const apiKey = env[keyName];
+      if (!apiKey) return json(request, env, { error: "该栏目尚未配置 Dify 密钥。" }, 503);
+      try {
+        const response = await fetch("https://api.dify.ai/v1/parameters", {
+          headers: { "Authorization": `Bearer ${apiKey}` },
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) return json(request, env, { error: result.message || "读取输入字段失败。" }, 502);
+        return json(request, env, { user_input_form: result.user_input_form || [] });
+      } catch {
+        return json(request, env, { error: "暂时无法读取 Dify 输入字段。" }, 502);
+      }
+    }
     if (url.pathname !== "/api/chat" || request.method !== "POST") {
       return json(request, env, { error: "接口不存在。" }, 404);
     }
@@ -66,20 +136,27 @@ export default {
     const apiKey = env[keyName];
     if (!apiKey) return json(request, env, { error: "该栏目尚未配置 Dify 密钥。" }, 503);
 
-    const difyResponse = await fetch("https://api.dify.ai/v1/chat-messages", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        inputs: { query, student_id: user },
-        query,
-        response_mode: "blocking",
-        conversation_id: String(payload.conversation_id || ""),
-        user,
-      }),
-    });
+    const inputs = await buildInputs(service, apiKey, query, user);
+
+    let difyResponse;
+    try {
+      difyResponse = await fetch("https://api.dify.ai/v1/chat-messages", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inputs,
+          query,
+          response_mode: "blocking",
+          conversation_id: String(payload.conversation_id || ""),
+          user,
+        }),
+      });
+    } catch {
+      return json(request, env, { error: "暂时无法连接 Dify，请稍后重试。" }, 502);
+    }
 
     const result = await difyResponse.json().catch(() => ({}));
     if (!difyResponse.ok) {
@@ -88,7 +165,7 @@ export default {
     }
 
     return json(request, env, {
-      answer: result.answer || "",
+      answer: publicAnswer(result.answer),
       conversation_id: result.conversation_id || "",
     });
   },
