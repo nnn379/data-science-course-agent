@@ -3,5 +3,5 @@
  * 留空时保留完整前端，并使用内置演示回答。
  */
 window.COURSE_AGENT_CONFIG = {
-  apiUrl: "",
+  apiUrl: "https://data-science-course-agent-api.nnn379-course-agent.workers.dev",
 };

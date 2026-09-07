@@ -85,6 +85,33 @@ async function buildInputs(service, apiKey, query, user) {
   return inputs;
 }
 
+function uploadedFileType(file) {
+  return String(file.type || "").toLowerCase().startsWith("image/") ? "image" : "document";
+}
+
+function supportedStudentWork(file) {
+  const extension = String(file.name || "").toLowerCase().split(".").pop();
+  return ["pdf", "doc", "docx", "xls", "xlsx", "csv", "txt", "md", "ppt", "pptx", "png", "jpg", "jpeg", "webp", "gif"].includes(extension);
+}
+
+async function uploadToDify(apiKey, file, user) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("user", user);
+  const response = await fetch("https://api.dify.ai/v1/files/upload", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}` },
+    body: form,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.id) throw new Error(result.message || `文件 ${file.name} 上传失败。`);
+  return {
+    transfer_method: "local_file",
+    upload_file_id: result.id,
+    type: uploadedFileType(file),
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -119,8 +146,16 @@ export default {
     if (origin && !allowed.includes(origin)) return json(request, env, { error: "当前来源不允许访问。" }, 403);
 
     let payload;
+    let files = [];
     try {
-      payload = await request.json();
+      const contentType = request.headers.get("Content-Type") || "";
+      if (contentType.includes("multipart/form-data")) {
+        const form = await request.formData();
+        payload = Object.fromEntries(["service", "query", "user", "conversation_id"].map((key) => [key, form.get(key) || ""]));
+        files = form.getAll("files").filter((item) => item instanceof File);
+      } else {
+        payload = await request.json();
+      }
     } catch {
       return json(request, env, { error: "请求格式不正确。" }, 400);
     }
@@ -132,11 +167,22 @@ export default {
     if (!keyName) return json(request, env, { error: "未知的课程服务。" }, 400);
     if (!query || query.length > 8000) return json(request, env, { error: "请输入 1 至 8000 个字符。" }, 400);
     if (!user || user.length > 128) return json(request, env, { error: "用户标识无效。" }, 400);
+    if (service === "grading" && (files.length < 1 || files.length > 5)) return json(request, env, { error: "请上传 1 至 5 个学生作业文件。" }, 400);
+    if (service !== "grading" && files.length) return json(request, env, { error: "当前栏目不接收文件。" }, 400);
+    if (files.some((file) => file.size > 15 * 1024 * 1024)) return json(request, env, { error: "单个文件不能超过 15 MB。" }, 400);
+    if (files.some((file) => !supportedStudentWork(file))) return json(request, env, { error: "作业文件格式不受支持，请上传文档、表格、演示文稿或图片。" }, 400);
 
     const apiKey = env[keyName];
     if (!apiKey) return json(request, env, { error: "该栏目尚未配置 Dify 密钥。" }, 503);
 
     const inputs = await buildInputs(service, apiKey, query, user);
+    if (service === "grading") {
+      try {
+        inputs.student_work = await Promise.all(files.map((file) => uploadToDify(apiKey, file, user)));
+      } catch (error) {
+        return json(request, env, { error: error.message || "学生作业上传失败。" }, 502);
+      }
+    }
 
     let difyResponse;
     try {

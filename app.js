@@ -20,6 +20,9 @@ const roles = {
 
 const app = document.querySelector("#app");
 let isSending = false;
+let selectedFiles = [];
+const MAX_GRADING_FILES = 5;
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
 
 function brand(isLight = false) {
   return `<div class="brand ${isLight ? "brand--light" : ""}"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span><strong>数据科学导论</strong><small>INTRODUCTION TO DATA SCIENCE</small></span></div>`;
@@ -44,6 +47,7 @@ function workspace(roleId, serviceId) {
   const service = role.services.find((item) => item.id === serviceId) || role.services[0];
   const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
   isSending = false;
+  selectedFiles = [];
   document.title = `${service.name} · 数据科学导论`;
   app.innerHTML = `<main class="workspace workspace--${roleId}">
     <aside class="sidebar"><div class="sidebar-photo" style="background-image:url('${role.photo}')" aria-hidden="true"></div><div class="sidebar-shade" aria-hidden="true"></div><div class="sidebar-inner">
@@ -60,7 +64,8 @@ function workspace(roleId, serviceId) {
 }
 
 function demoChat(service) {
-  return `<div class="chat-shell"><div class="messages" id="messages"><div class="date-rule"><span>今天</span></div><div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.greeting}</p></div></div></div><section class="starter-section"><div class="starter-heading"><span>从这里开始</span><small>你也可以直接输入自己的问题</small></div><div class="question-grid">${service.prompts.map((prompt) => `<button class="prompt">${prompt}<i>↗</i></button>`).join("")}</div></section><div id="typing" class="typing"><span></span><span></span><span></span></div></div><div class="composer-wrap"><form class="composer" id="form"><button class="attach" type="button" aria-label="添加材料">＋</button><textarea id="input" rows="1" placeholder="输入你的问题，按 Enter 发送…"></textarea><button class="send" type="submit" aria-label="发送问题">↑</button></form><p>智能体的回答仅作为学习与教学参考，请结合课程要求进行判断。</p></div></div>`;
+  const upload = service.id === "grading" ? `<div class="upload-area"><input id="file-input" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif" hidden><button class="upload-button" id="upload-button" type="button"><span>＋</span><b>上传学生作业</b><small>支持文档或图片，最多 5 个文件</small></button><div class="file-list" id="file-list"></div></div>` : "";
+  return `<div class="chat-shell"><div class="messages" id="messages"><div class="date-rule"><span>今天</span></div><div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.greeting}</p></div></div></div><section class="starter-section"><div class="starter-heading"><span>从这里开始</span><small>你也可以直接输入自己的问题</small></div><div class="question-grid">${service.prompts.map((prompt) => `<button class="prompt">${prompt}<i>↗</i></button>`).join("")}</div></section><div id="typing" class="typing"><span></span><span></span><span></span></div></div><div class="composer-wrap">${upload}<form class="composer composer--query-only" id="form"><textarea id="input" rows="1" placeholder="${service.id === "grading" ? "输入作业要求、评分标准或批改重点…" : "输入你的问题，按 Enter 发送…"}"></textarea><button class="send" type="submit" aria-label="发送问题">↑</button></form><p id="composer-note">${service.id === "grading" ? "提交前请上传学生作业；文件仅用于本次 Dify 工作流处理。" : "智能体的回答仅作为学习与教学参考，请结合课程要求进行判断。"}</p></div></div>`;
 }
 
 function bindWorkspace(roleId, service) {
@@ -78,6 +83,7 @@ function bindWorkspace(roleId, service) {
   const form = document.querySelector("#form");
   if (!form) return;
   const input = document.querySelector("#input");
+  if (service.id === "grading") bindFileUpload();
   document.querySelectorAll(".prompt").forEach((button) => button.addEventListener("click", () => ask(button.textContent.replace("↗", "").trim(), service)));
   form.addEventListener("submit", (event) => { event.preventDefault(); if (!input.value.trim()) return; ask(input.value.trim(), service); input.value = ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
@@ -85,6 +91,13 @@ function bindWorkspace(roleId, service) {
 
 async function ask(question, service) {
   if (isSending) return;
+  if (service.id === "grading" && selectedFiles.length === 0) {
+    const note = document.querySelector("#composer-note");
+    note.textContent = "请先上传需要批改的学生作业文件。";
+    note.classList.add("warning");
+    document.querySelector("#upload-button")?.focus();
+    return;
+  }
   isSending = true;
   const messages = document.querySelector("#messages");
   document.querySelector(".starter-section")?.remove();
@@ -100,12 +113,17 @@ async function ask(question, service) {
   typing.classList.add("show");
   messages.scrollTop = messages.scrollHeight;
   try {
-    const reply = await getReply(question, service);
+    const filesForRequest = [...selectedFiles];
+    const reply = await getReply(question, service, filesForRequest);
     typing.classList.remove("show");
     const answer = document.createElement("div");
     answer.className = "assistant-row";
     answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(reply)}</p></div></div>`;
     messages.insertBefore(answer, typing);
+    if (service.id === "grading") {
+      selectedFiles = [];
+      renderSelectedFiles();
+    }
     messages.scrollTop = messages.scrollHeight;
   } catch (error) {
     typing.classList.remove("show");
@@ -122,7 +140,7 @@ async function ask(question, service) {
   }
 }
 
-async function getReply(question, service) {
+async function getReply(question, service, files = []) {
   const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
   if (!apiUrl) {
     await new Promise((resolve) => window.setTimeout(resolve, 700));
@@ -130,20 +148,66 @@ async function getReply(question, service) {
   }
 
   const visitorId = getVisitorId();
-  const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const payload = {
       service: service.id,
       query: question,
       user: visitorId,
       conversation_id: getConversation(service.id),
-    }),
-  });
+  };
+  const options = { method: "POST" };
+  if (service.id === "grading") {
+    const form = new FormData();
+    Object.entries(payload).forEach(([key, value]) => form.append(key, value));
+    files.forEach((file) => form.append("files", file, file.name));
+    options.body = form;
+  } else {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(payload);
+  }
+  const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/chat`, options);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || "Dify 服务暂时不可用，请稍后重试。");
   if (result.conversation_id) saveConversation(service.id, result.conversation_id);
   return result.answer || "本次运行没有返回文字内容。";
+}
+
+function bindFileUpload() {
+  const input = document.querySelector("#file-input");
+  const button = document.querySelector("#upload-button");
+  button.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => {
+    const incoming = Array.from(input.files || []);
+    const accepted = incoming.filter((file) => file.size <= MAX_FILE_BYTES);
+    selectedFiles = [...selectedFiles, ...accepted].slice(0, MAX_GRADING_FILES);
+    input.value = "";
+    renderSelectedFiles();
+    const note = document.querySelector("#composer-note");
+    if (incoming.some((file) => file.size > MAX_FILE_BYTES)) {
+      note.textContent = "单个文件不能超过 15 MB，超限文件未添加。";
+      note.classList.add("warning");
+    } else if (selectedFiles.length) {
+      note.textContent = `已选择 ${selectedFiles.length} 个文件，提交后将用于本次批改。`;
+      note.classList.remove("warning");
+    }
+  });
+}
+
+function renderSelectedFiles() {
+  const list = document.querySelector("#file-list");
+  if (!list) return;
+  list.innerHTML = selectedFiles.map((file, index) => `<div class="file-chip"><span aria-hidden="true">文</span><b>${escapeHtml(file.name)}</b><small>${formatFileSize(file.size)}</small><button type="button" data-remove-file="${index}" aria-label="移除文件">×</button></div>`).join("");
+  list.querySelectorAll("[data-remove-file]").forEach((button) => button.addEventListener("click", () => {
+    selectedFiles.splice(Number(button.dataset.removeFile), 1);
+    renderSelectedFiles();
+    const note = document.querySelector("#composer-note");
+    note.textContent = selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件，提交后将用于本次批改。` : "提交前请上传学生作业；文件仅用于本次 Dify 工作流处理。";
+    note.classList.remove("warning");
+  }));
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function getVisitorId() {
