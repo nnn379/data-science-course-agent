@@ -104,8 +104,8 @@ async function ask(question, service) {
   const user = document.createElement("div");
   user.className = "user-row";
   user.innerHTML = `<div class="bubble user-bubble">${escapeHtml(question)}</div>`;
-  messages.append(user);
   const typing = document.querySelector("#typing");
+  messages.insertBefore(user, typing);
   const input = document.querySelector("#input");
   const send = document.querySelector(".send");
   input.disabled = true;
