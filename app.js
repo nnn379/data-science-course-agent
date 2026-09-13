@@ -64,8 +64,16 @@ function workspace(roleId, serviceId) {
 }
 
 function demoChat(service) {
+  const history = getChatHistory(service.id);
   const upload = service.id === "grading" ? `<div class="upload-area"><input id="file-input" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif" hidden><button class="upload-button" id="upload-button" type="button"><span>＋</span><b>上传学生作业</b><small>支持文档或图片，最多 5 个文件</small></button><div class="file-list" id="file-list"></div></div>` : "";
-  return `<div class="chat-shell"><div class="messages" id="messages"><div class="date-rule"><span>今天</span></div><div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.greeting}</p></div></div></div><section class="starter-section"><div class="starter-heading"><span>从这里开始</span><small>你也可以直接输入自己的问题</small></div><div class="question-grid">${service.prompts.map((prompt) => `<button class="prompt">${prompt}<i>↗</i></button>`).join("")}</div></section><div id="typing" class="typing"><span></span><span></span><span></span></div></div><div class="composer-wrap">${upload}<form class="composer composer--query-only" id="form"><textarea id="input" rows="1" placeholder="${service.id === "grading" ? "输入作业要求、评分标准或批改重点…" : "输入你的问题，按 Enter 发送…"}"></textarea><button class="send" type="submit" aria-label="发送问题">↑</button></form><p id="composer-note">${service.id === "grading" ? "提交前请上传学生作业；文件仅用于本次 Dify 工作流处理。" : "智能体的回答仅作为学习与教学参考，请结合课程要求进行判断。"}</p></div></div>`;
+  const savedMessages = history.map((message) => renderHistoryMessage(message, service)).join("");
+  const starters = history.length ? "" : `<section class="starter-section"><div class="starter-heading"><span>从这里开始</span><small>你也可以直接输入自己的问题</small></div><div class="question-grid">${service.prompts.map((prompt) => `<button class="prompt">${prompt}<i>↗</i></button>`).join("")}</div></section>`;
+  return `<div class="chat-shell"><div class="messages" id="messages"><div class="date-rule"><span>${history.length ? "已保存的对话" : "今天"}</span></div><div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.greeting}</p></div></div></div>${savedMessages}${starters}<div id="typing" class="typing"><span></span><span></span><span></span></div></div><div class="composer-wrap">${upload}<form class="composer composer--query-only" id="form"><textarea id="input" rows="1" placeholder="${service.id === "grading" ? "输入作业要求、评分标准或批改重点…" : "输入你的问题，按 Enter 发送…"}"></textarea><button class="send" type="submit" aria-label="发送问题">↑</button></form><p id="composer-note">${service.id === "grading" ? "提交前请上传学生作业；文件仅用于本次 Dify 工作流处理。" : "智能体的回答仅作为学习与教学参考，请结合课程要求进行判断。"}</p></div></div>`;
+}
+
+function renderHistoryMessage(message, service) {
+  if (message.role === "user") return `<div class="user-row"><div class="bubble user-bubble">${formatText(message.content)}</div></div>`;
+  return `<div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(message.content)}</p></div></div></div>`;
 }
 
 function bindWorkspace(roleId, service) {
@@ -87,6 +95,8 @@ function bindWorkspace(roleId, service) {
   document.querySelectorAll(".prompt").forEach((button) => button.addEventListener("click", () => ask(button.textContent.replace("↗", "").trim(), service)));
   form.addEventListener("submit", (event) => { event.preventDefault(); if (!input.value.trim()) return; ask(input.value.trim(), service); input.value = ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
+  const messages = document.querySelector("#messages");
+  requestAnimationFrame(() => { messages.scrollTop = messages.scrollHeight; });
 }
 
 async function ask(question, service) {
@@ -106,6 +116,7 @@ async function ask(question, service) {
   user.innerHTML = `<div class="bubble user-bubble">${escapeHtml(question)}</div>`;
   const typing = document.querySelector("#typing");
   messages.insertBefore(user, typing);
+  appendChatHistory(service.id, "user", question);
   const input = document.querySelector("#input");
   const send = document.querySelector(".send");
   input.disabled = true;
@@ -120,6 +131,7 @@ async function ask(question, service) {
     answer.className = "assistant-row";
     answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(reply)}</p></div></div>`;
     messages.insertBefore(answer, typing);
+    appendChatHistory(service.id, "assistant", reply);
     if (service.id === "grading") {
       selectedFiles = [];
       renderSelectedFiles();
@@ -230,6 +242,26 @@ function saveConversation(serviceId, conversationId) {
 
 function clearConversation(serviceId) {
   localStorage.removeItem(`ds-course-agent-conversation-${serviceId}`);
+  localStorage.removeItem(`ds-course-agent-history-${serviceId}`);
+}
+
+function getChatHistory(serviceId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(`ds-course-agent-history-${serviceId}`) || "[]");
+    return Array.isArray(value) ? value.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function appendChatHistory(serviceId, role, content) {
+  const key = `ds-course-agent-history-${serviceId}`;
+  const history = [...getChatHistory(serviceId), { role, content: String(content).slice(0, 12000) }].slice(-80);
+  try {
+    localStorage.setItem(key, JSON.stringify(history));
+  } catch {
+    try { localStorage.setItem(key, JSON.stringify(history.slice(-30))); } catch { /* 浏览器存储不可用时不影响聊天 */ }
+  }
 }
 
 function formatText(value) { return escapeHtml(String(value)).replaceAll("\n", "<br>"); }
