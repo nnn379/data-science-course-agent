@@ -171,12 +171,20 @@ async function ask(question, service) {
   messages.scrollTop = messages.scrollHeight;
   try {
     const filesForRequest = [...selectedFiles];
-    const reply = await getReply(question, service, filesForRequest);
-    typing.classList.remove("show");
-    const answer = document.createElement("div");
-    answer.className = "assistant-row";
-    answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(reply)}</p></div></div>`;
-    messages.insertBefore(answer, typing);
+    let answer;
+    const showAnswer = (reply) => {
+      if (!answer) {
+        typing.classList.remove("show");
+        answer = document.createElement("div");
+        answer.className = "assistant-row";
+        answer.innerHTML = `<div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p></p></div></div>`;
+        messages.insertBefore(answer, typing);
+      }
+      answer.querySelector("p").innerHTML = formatText(reply);
+      messages.scrollTop = messages.scrollHeight;
+    };
+    const reply = await getReply(question, service, filesForRequest, showAnswer);
+    if (!answer) showAnswer(reply);
     appendChatHistory(service.id, "assistant", reply);
     if (service.id === "grading") {
       selectedFiles = [];
@@ -198,10 +206,11 @@ async function ask(question, service) {
   }
 }
 
-async function getReply(question, service, files = []) {
+async function getReply(question, service, files = [], onDelta) {
   const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
   if (!apiUrl) {
     await new Promise((resolve) => window.setTimeout(resolve, 700));
+    onDelta?.(service.reply);
     return service.reply;
   }
 
@@ -223,10 +232,59 @@ async function getReply(question, service, files = []) {
     options.body = JSON.stringify(payload);
   }
   const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/chat`, options);
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || "Dify 服务暂时不可用，请稍后重试。");
-  if (result.conversation_id) saveConversation(service.id, result.conversation_id);
-  return result.answer || "本次运行没有返回文字内容。";
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || "Dify 服务暂时不可用，请稍后重试。");
+  }
+  if (!response.body) throw new Error("Dify 服务没有返回可读取的响应流。");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+  let conversationId = "";
+
+  const processEvent = (packet) => {
+    const lines = packet.split(/\r?\n/);
+    const eventLine = lines.find((line) => line.startsWith("event:"));
+    const data = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""))
+      .join("\n");
+    if (!data) return;
+
+    let payload;
+    try { payload = JSON.parse(data); }
+    catch { return; }
+    const event = eventLine?.slice(6).trim() || payload.event;
+    if (event === "error") throw new Error(payload.message || "Dify 工作流运行失败。");
+    if (event === "message") {
+      const fragment = String(payload.answer || "");
+      if (!fragment) return;
+      answer += fragment;
+      onDelta?.(answer);
+    } else if (event === "message_replace") {
+      answer = String(payload.answer || "");
+      onDelta?.(answer);
+    } else if (event === "message_end") {
+      conversationId = String(payload.conversation_id || "");
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let separator;
+    while ((separator = buffer.match(/\r?\n\r?\n/))) {
+      const packet = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator[0].length);
+      processEvent(packet);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) processEvent(buffer);
+  if (conversationId) saveConversation(service.id, conversationId);
+  return answer || "本次运行没有返回文字内容。";
 }
 
 function bindFileUpload() {

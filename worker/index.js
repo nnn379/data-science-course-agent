@@ -34,13 +34,6 @@ function json(request, env, body, status = 200) {
   });
 }
 
-function publicAnswer(value) {
-  return String(value || "")
-    .replace(/<think\b[^>]*>[\s\S]*?<\/think>\s*/gi, "")
-    .replace(/<think\b[^>]*>[\s\S]*$/gi, "")
-    .trim();
-}
-
 async function buildInputs(service, apiKey, query, user) {
   let form = inputFormCache.get(service);
   if (!form) {
@@ -195,7 +188,7 @@ export default {
         body: JSON.stringify({
           inputs,
           query,
-          response_mode: "blocking",
+          response_mode: "streaming",
           conversation_id: String(payload.conversation_id || ""),
           user,
         }),
@@ -204,15 +197,20 @@ export default {
       return json(request, env, { error: "暂时无法连接 Dify，请稍后重试。" }, 502);
     }
 
-    const result = await difyResponse.json().catch(() => ({}));
     if (!difyResponse.ok) {
+      const result = await difyResponse.json().catch(() => ({}));
       const message = result.message || "Dify 工作流运行失败。";
       return json(request, env, { error: message }, difyResponse.status >= 500 ? 502 : 400);
     }
 
-    return json(request, env, {
-      answer: publicAnswer(result.answer),
-      conversation_id: result.conversation_id || "",
+    return new Response(difyResponse.body, {
+      status: 200,
+      headers: {
+        ...corsHeaders(request, env),
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
     });
   },
 };
