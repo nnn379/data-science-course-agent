@@ -23,9 +23,39 @@ let isSending = false;
 let selectedFiles = [];
 const MAX_GRADING_FILES = 5;
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
+const HISTORY_TTL = 3 * 24 * 60 * 60 * 1000;
+const ACCOUNTS_KEY = "ds-course-agent-accounts-v1";
+const SESSION_KEY = "ds-course-agent-session-v1";
 
 function brand(isLight = false) {
   return `<div class="brand ${isLight ? "brand--light" : ""}"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span><strong>数据科学导论</strong><small>INTRODUCTION TO DATA SCIENCE</small></span></div>`;
+}
+
+function login(roleId) {
+  const role = roles[roleId];
+  if (!role) { landing(); return; }
+  document.title = "登录 · 数据科学导论";
+  app.innerHTML = `<main class="login-page"><div class="login-photo" aria-hidden="true"></div><section class="login-card">
+    ${brand()}<p class="login-kicker">${role.english} · SECURE ENTRY</p><h1>进入${role.name}</h1><p class="login-intro">使用用户名和密码进入课程智能体。首次使用时，系统会创建该唯一用户名。</p>
+    <form id="login-form" class="login-form"><label>用户名<input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="3—32 位用户名" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><p id="login-message" class="login-message">登录后将为你保留近三天的对话与学习路径。</p><button type="submit">登录 / 首次创建 <span>→</span></button></form>
+    <p class="login-foot">仅需用户名与密码 · 用户名在本浏览器中唯一</p>
+  </section></main>`;
+  document.querySelector("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = document.querySelector("#login-username").value.trim();
+    const password = document.querySelector("#login-password").value;
+    const note = document.querySelector("#login-message");
+    if (!/^[\u4e00-\u9fa5a-zA-Z0-9_-]{3,32}$/.test(username)) { note.textContent = "用户名需为 3—32 位中文、字母、数字、下划线或连字符。"; note.classList.add("warning"); return; }
+    if (password.length < 6) { note.textContent = "密码至少需要 6 位。"; note.classList.add("warning"); return; }
+    const submit = event.currentTarget.querySelector("button");
+    submit.disabled = true;
+    try {
+      const result = await signIn(username, password);
+      if (!result.ok) { note.textContent = result.message; note.classList.add("warning"); return; }
+      workspace(roleId);
+    } catch { note.textContent = "暂时无法读取本地账户信息，请检查浏览器存储权限。"; note.classList.add("warning"); }
+    finally { submit.disabled = false; }
+  });
 }
 
 function landing() {
@@ -39,10 +69,11 @@ function landing() {
     </div></section>
     <footer class="landing-footer"><span>DATA SCIENCE · LEARN WITH CONTEXT</span><span>以数据为舟，向问题深处</span></footer>
   </main>`;
-  document.querySelectorAll("[data-role]").forEach((button) => button.addEventListener("click", () => workspace(button.dataset.role)));
+  document.querySelectorAll("[data-role]").forEach((button) => button.addEventListener("click", () => login(button.dataset.role)));
 }
 
-function workspace(roleId, serviceId) {
+function workspace(roleId, serviceId, view = "chat") {
+  if (!getCurrentUser()) { login(roleId); return; }
   const role = roles[roleId];
   const service = role.services.find((item) => item.id === serviceId) || role.services[0];
   const apiUrl = window.COURSE_AGENT_CONFIG?.apiUrl?.trim();
@@ -54,13 +85,14 @@ function workspace(roleId, serviceId) {
       ${brand(true)}<button class="back" type="button"><span>←</span> 返回身份选择</button>
       <div class="role-heading"><small>${role.english}</small><h2>${role.name}</h2><p>${role.desc}</p></div>
       <div class="nav-label"><span>课程服务</span><small>${String(role.services.length).padStart(2, "0")}</small></div>
-      <nav class="service-nav" aria-label="智能体服务">${role.services.map((item) => `<button class="service-item ${item.id === service.id ? "active" : ""}" data-service="${item.id}"><b>${item.mark}</b><span><strong>${item.name}</strong><small>${item.desc}</small></span><i>→</i></button>`).join("")}</nav>
+      <nav class="service-nav" aria-label="智能体服务">${role.services.map((item) => `<button class="service-item ${view === "chat" && item.id === service.id ? "active" : ""}" data-service="${item.id}"><b>${item.mark}</b><span><strong>${item.name}</strong><small>${item.desc}</small></span><i>→</i></button>`).join("")}</nav>
+      ${roleId === "student" ? `<div class="nav-label nav-label--path"><span>学习档案</span><small>03 DAYS</small></div><button class="learning-path-link ${view === "path" ? "active" : ""}" data-learning-path><b>路</b><span><strong>用户学习路径</strong><small>查看近期知识学习轨迹</small></span><i>→</i></button>` : ""}
       <div class="sidebar-foot"><span>DS · COURSE AGENT</span><small>Powered by Dify workflow</small></div>
     </div></aside>
-    <section class="content"><header class="content-header"><button class="mobile-menu" aria-label="打开服务菜单">☰</button><div><p>${role.name} / COURSE SERVICE</p><h1>${service.name}</h1></div><div class="header-actions"><button class="reset-chat" type="button" title="清除当前栏目的对话">重新开始</button><div class="agent-state ${apiUrl ? "connected" : ""}"><i></i><span>${apiUrl ? "Dify 服务已连接" : "界面演示模式"}</span></div></div></header>${demoChat(service)}</section>
+    <section class="content"><header class="content-header"><button class="mobile-menu" aria-label="打开服务菜单">☰</button><div><p>${role.name} / COURSE SERVICE</p><h1>${view === "path" ? "用户学习路径" : service.name}</h1></div><div class="header-actions">${view === "chat" ? `<button class="reset-chat" type="button" title="清除当前栏目的对话">重新开始</button>` : ""}<span class="current-user">${escapeHtml(getCurrentUser())}</span><button class="logout" type="button">退出</button><div class="agent-state ${apiUrl ? "connected" : ""}"><i></i><span>${apiUrl ? "Dify 服务已连接" : "界面演示模式"}</span></div></div></header>${view === "path" ? learningPath() : demoChat(service)}</section>
     <button class="sidebar-mask" aria-label="关闭服务菜单"></button>
   </main>`;
-  bindWorkspace(roleId, service);
+  bindWorkspace(roleId, service, view);
 }
 
 function demoChat(service) {
@@ -71,23 +103,37 @@ function demoChat(service) {
   return `<div class="chat-shell"><div class="messages" id="messages"><div class="date-rule"><span>${history.length ? "已保存的对话" : "今天"}</span></div><div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${service.greeting}</p></div></div></div>${savedMessages}${starters}<div id="typing" class="typing"><span></span><span></span><span></span></div></div><div class="composer-wrap">${upload}<form class="composer composer--query-only" id="form"><textarea id="input" rows="1" placeholder="${service.id === "grading" ? "输入作业要求、评分标准或批改重点…" : "输入你的问题，按 Enter 发送…"}"></textarea><button class="send" type="submit" aria-label="发送问题">↑</button></form><p id="composer-note">${service.id === "grading" ? "提交前请上传学生作业；文件仅用于本次 Dify 工作流处理。" : "智能体的回答仅作为学习与教学参考，请结合课程要求进行判断。"}</p></div></div>`;
 }
 
+function learningPath() {
+  const events = getLearningEvents();
+  const serviceNames = Object.fromEntries(roles.student.services.map((service) => [service.id, service.name]));
+  const nodes = events.length ? events.map((event, index) => `<article class="path-node"><span class="path-index">${String(index + 1).padStart(2, "0")}</span><div><small>${formatPathTime(event.createdAt)} · ${serviceNames[event.serviceId] || "学习记录"}</small><h2>${escapeHtml(event.topic)}</h2><p>${index === 0 ? "从这次提问开始建立学习线索。" : "基于最近的提问，继续延展知识网络。"}</p></div></article>`).join("") : `<div class="path-empty"><span>◇</span><h2>学习路径将从第一次提问开始</h2><p>在“智能伴学中心”或“个性化学习”中提问后，系统会保留近三天的知识学习轨迹。</p><button type="button" data-start-learning>去智能伴学中心</button></div>`;
+  return `<section class="learning-path"><div class="path-hero"><p>RECENT LEARNING · 03 DAYS</p><h1>${escapeHtml(getCurrentUser())} 的知识学习路径</h1><span>根据近三天在学生端的提问自动整理，共记录 ${events.length} 个学习节点。</span></div><div class="path-line" aria-label="最近知识学习路径">${nodes}</div><p class="path-note">仅保留近三天记录；超过期限的对话和学习节点会自动清除。</p></section>`;
+}
+
+function formatPathTime(value) {
+  return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
 function renderHistoryMessage(message, service) {
   if (message.role === "user") return `<div class="user-row"><div class="bubble user-bubble">${formatText(message.content)}</div></div>`;
   return `<div class="assistant-row"><div class="avatar">${service.mark}</div><div class="message-group"><span class="sender">${service.name}</span><div class="bubble assistant-bubble"><p>${formatText(message.content)}</p></div></div></div>`;
 }
 
-function bindWorkspace(roleId, service) {
+function bindWorkspace(roleId, service, view) {
   document.querySelector(".back").addEventListener("click", landing);
   document.querySelectorAll("[data-service]").forEach((button) => button.addEventListener("click", () => workspace(roleId, button.dataset.service)));
+  document.querySelector("[data-learning-path]")?.addEventListener("click", () => workspace(roleId, service.id, "path"));
+  document.querySelector(".logout").addEventListener("click", () => { signOut(); landing(); });
   const layout = document.querySelector(".workspace");
   const menu = document.querySelector(".mobile-menu");
   const mask = document.querySelector(".sidebar-mask");
   menu.addEventListener("click", () => layout.classList.add("sidebar-open"));
   mask.addEventListener("click", () => layout.classList.remove("sidebar-open"));
-  document.querySelector(".reset-chat").addEventListener("click", () => {
+  document.querySelector(".reset-chat")?.addEventListener("click", () => {
     clearConversation(service.id);
     workspace(roleId, service.id);
   });
+  document.querySelector("[data-start-learning]")?.addEventListener("click", () => workspace("student", "study"));
   const form = document.querySelector("#form");
   if (!form) return;
   const input = document.querySelector("#input");
@@ -222,46 +268,100 @@ function formatFileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function getVisitorId() {
-  const key = "ds-course-agent-visitor";
-  let value = localStorage.getItem(key);
-  if (!value) {
-    value = self.crypto?.randomUUID?.() || `visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    localStorage.setItem(key, value);
-  }
-  return value;
+function accountKey(suffix) { return `ds-course-agent-${encodeURIComponent(getCurrentUser() || "guest")}-${suffix}`; }
+
+function getCurrentUser() { return localStorage.getItem(SESSION_KEY) || ""; }
+
+function getAccounts() {
+  try { const accounts = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "{}"); return accounts && typeof accounts === "object" ? accounts : {}; }
+  catch { return {}; }
 }
 
+async function passwordHash(password) {
+  if (!self.crypto?.subtle) return `plain:${password}`;
+  const bytes = new TextEncoder().encode(password);
+  const digest = await self.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function signIn(username, password) {
+  const id = username.toLocaleLowerCase("zh-CN");
+  const accounts = getAccounts();
+  const hash = await passwordHash(password);
+  if (accounts[id] && accounts[id].passwordHash !== hash) return { ok: false, message: "用户名或密码不正确。" };
+  if (!accounts[id]) {
+    accounts[id] = { username, passwordHash: hash, createdAt: Date.now() };
+    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+  }
+  localStorage.setItem(SESSION_KEY, id);
+  return { ok: true };
+}
+
+function signOut() { localStorage.removeItem(SESSION_KEY); }
+
+function getVisitorId() { return getCurrentUser(); }
+
 function getConversation(serviceId) {
-  return localStorage.getItem(`ds-course-agent-conversation-${serviceId}`) || "";
+  try {
+    const saved = JSON.parse(localStorage.getItem(accountKey(`conversation-${serviceId}`)) || "null");
+    if (saved?.id && Date.now() - saved.updatedAt < HISTORY_TTL) return saved.id;
+  } catch { /* A malformed or expired identifier starts a fresh Dify conversation. */ }
+  localStorage.removeItem(accountKey(`conversation-${serviceId}`));
+  return "";
 }
 
 function saveConversation(serviceId, conversationId) {
-  localStorage.setItem(`ds-course-agent-conversation-${serviceId}`, conversationId);
+  localStorage.setItem(accountKey(`conversation-${serviceId}`), JSON.stringify({ id: conversationId, updatedAt: Date.now() }));
 }
 
 function clearConversation(serviceId) {
-  localStorage.removeItem(`ds-course-agent-conversation-${serviceId}`);
-  localStorage.removeItem(`ds-course-agent-history-${serviceId}`);
+  localStorage.removeItem(accountKey(`conversation-${serviceId}`));
+  localStorage.removeItem(accountKey(`history-${serviceId}`));
 }
 
 function getChatHistory(serviceId) {
+  const key = accountKey(`history-${serviceId}`);
   try {
-    const value = JSON.parse(localStorage.getItem(`ds-course-agent-history-${serviceId}`) || "[]");
-    return Array.isArray(value) ? value.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string") : [];
-  } catch {
-    return [];
-  }
+    const cutoff = Date.now() - HISTORY_TTL;
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    const history = Array.isArray(value) ? value.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string" && Number(item.createdAt) >= cutoff) : [];
+    if (history.length !== (Array.isArray(value) ? value.length : 0)) localStorage.setItem(key, JSON.stringify(history));
+    return history;
+  } catch { return []; }
 }
 
 function appendChatHistory(serviceId, role, content) {
-  const key = `ds-course-agent-history-${serviceId}`;
-  const history = [...getChatHistory(serviceId), { role, content: String(content).slice(0, 12000) }].slice(-80);
+  const key = accountKey(`history-${serviceId}`);
+  const createdAt = Date.now();
+  const history = [...getChatHistory(serviceId), { role, content: String(content).slice(0, 12000), createdAt }].slice(-80);
+  try { localStorage.setItem(key, JSON.stringify(history)); }
+  catch { try { localStorage.setItem(key, JSON.stringify(history.slice(-30))); } catch { /* 浏览器存储不可用时不影响聊天 */ } }
+  if (role === "user" && ["study", "personal"].includes(serviceId)) appendLearningEvent(serviceId, content, createdAt);
+}
+
+function appendLearningEvent(serviceId, content, createdAt) {
+  const key = accountKey("learning-path");
+  const events = getLearningEvents();
+  const topic = inferTopic(content);
+  const last = events.at(-1);
+  if (!last || last.topic !== topic || createdAt - last.createdAt > 20 * 60 * 1000) events.push({ serviceId, topic, createdAt });
+  localStorage.setItem(key, JSON.stringify(events.slice(-24)));
+}
+
+function getLearningEvents() {
+  const key = accountKey("learning-path");
   try {
-    localStorage.setItem(key, JSON.stringify(history));
-  } catch {
-    try { localStorage.setItem(key, JSON.stringify(history.slice(-30))); } catch { /* 浏览器存储不可用时不影响聊天 */ }
-  }
+    const cutoff = Date.now() - HISTORY_TTL;
+    const events = JSON.parse(localStorage.getItem(key) || "[]");
+    const recent = Array.isArray(events) ? events.filter((event) => event && typeof event.topic === "string" && Number(event.createdAt) >= cutoff) : [];
+    if (recent.length !== (Array.isArray(events) ? events.length : 0)) localStorage.setItem(key, JSON.stringify(recent));
+    return recent;
+  } catch { return []; }
+}
+
+function inferTopic(question) {
+  const rules = [[/python|代码|编程/i, "Python 与编程"], [/统计|相关|因果|概率|回归/i, "统计推断"], [/清洗|缺失|异常|预处理/i, "数据清洗"], [/可视化|图表|绘图/i, "数据可视化"], [/模型|分类|聚类|预测|机器学习/i, "机器学习"], [/探索|eda|分析/i, "探索性数据分析"]];
+  return rules.find(([pattern]) => pattern.test(question))?.[1] || "数据科学基础";
 }
 
 function formatText(value) { return escapeHtml(String(value)).replaceAll("\n", "<br>"); }
