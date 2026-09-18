@@ -19,7 +19,8 @@ button, textarea { font: inherit; } button { color: inherit; }
 .login-page { position: relative; display: grid; min-height: 100vh; place-items: center; overflow: hidden; padding: 28px; color: var(--ink); background: #17332f; }
 .login-photo { position: absolute; inset: 0; background: linear-gradient(110deg, rgba(8,27,24,.88), rgba(8,27,24,.54)), url("assets/campus-day.png") center/cover no-repeat; }
 .login-card { position: relative; width: min(440px, 100%); padding: 42px; background: rgba(248,247,242,.96); box-shadow: 0 30px 90px rgba(0,0,0,.3); }
-.login-kicker { margin: 35px 0 10px; color: #88714a; font-size: 9px; letter-spacing: .2em; }
+.login-back { margin: 29px 0 0; padding: 0; color: #61706a; border: 0; background: transparent; cursor: pointer; font-size: 10px; letter-spacing: .05em; }.login-back span { margin-right: 6px; transition: margin .2s; }.login-back:hover span { margin-right: 10px; }
+.login-kicker { margin: 20px 0 10px; color: #88714a; font-size: 9px; letter-spacing: .2em; }
 .login-card h1 { margin: 0; font: 600 35px var(--serif); letter-spacing: .07em; }
 .login-intro { margin: 14px 0 25px; color: var(--muted); font-size: 12px; line-height: 1.9; }
 .login-form { display: flex; flex-direction: column; gap: 15px; }
@@ -30,7 +31,7 @@ button, textarea { font: inherit; } button { color: inherit; }
 .login-message.warning { color: #a45c3f; }
 .login-form button { display: flex; justify-content: space-between; align-items: center; padding: 15px 17px; color: white; border: 0; background: var(--green); cursor: pointer; font-size: 12px; letter-spacing: .07em; }
 .login-form button:hover { background: #123b34; }.login-form button:disabled { opacity: .55; cursor: wait; }
-.login-form button span { font-size: 19px; }.login-foot { margin: 24px 0 0; color: #8b938f; font-size: 9px; text-align: center; }
+.login-form button span { font-size: 19px; }.login-foot { margin: 24px 0 0; color: #8b938f; font-size: 9px; text-align: center; }.auth-switch { padding: 0; color: var(--green); border: 0; background: transparent; cursor: pointer; font-size: inherit; text-decoration: underline; }
 
 .landing { position: relative; min-height: 100vh; overflow: hidden; color: white; background: #172d2b; }
 .landing-photo { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(8,25,23,.84) 0%, rgba(8,25,23,.5) 47%, rgba(8,25,23,.2) 100%), url("assets/campus-day.png") center/cover no-repeat; transform: scale(1.01); }

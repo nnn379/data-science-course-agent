@@ -26,20 +26,29 @@ const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const RETENTION_MONTHS = 4;
 const ACCOUNTS_KEY = "ds-course-agent-accounts-v1";
 const SESSION_KEY = "ds-course-agent-session-v1";
+const AUTH_TOKEN_KEY = "ds-course-agent-auth-token-v1";
+const USER_STATE_SUFFIXES = ["conversation-study", "conversation-personal", "conversation-design", "conversation-case", "conversation-grading", "history-study", "history-personal", "history-design", "history-case", "history-grading", "learning-path"];
+let stateSyncTimer = 0;
+let stateSyncInFlight = false;
+let stateSyncQueued = false;
 
 function brand(isLight = false) {
   return `<div class="brand ${isLight ? "brand--light" : ""}"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span><strong>数据科学导论</strong><small>INTRODUCTION TO DATA SCIENCE</small></span></div>`;
 }
 
-function login(roleId) {
+function login(roleId, mode = "login") {
   const role = roles[roleId];
   if (!role) { landing(); return; }
-  document.title = "登录 · 数据科学导论";
+  const isRegister = mode === "register";
+  const title = isRegister ? "注册账号" : "登录";
+  document.title = `${title} · 数据科学导论`;
   app.innerHTML = `<main class="login-page"><div class="login-photo" aria-hidden="true"></div><section class="login-card">
-    ${brand()}<p class="login-kicker">${role.english} · SECURE ENTRY</p><h1>进入${role.name}</h1><p class="login-intro">使用用户名和密码进入课程智能体。首次使用时，系统会创建该唯一用户名。</p>
-    <form id="login-form" class="login-form"><label>用户名<input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="3—32 位用户名" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><p id="login-message" class="login-message">登录后将为你保留近四个月的对话与学习路径。</p><button type="submit">登录 / 首次创建 <span>→</span></button></form>
-    <p class="login-foot">仅需用户名与密码 · 用户名在本浏览器中唯一</p>
+    ${brand()}<button class="login-back" type="button"><span>←</span> 返回首页</button><p class="login-kicker">${role.english} · SECURE ENTRY</p><h1>${isRegister ? "创建账号" : `进入${role.name}`}</h1><p class="login-intro">${isRegister ? "注册后可在任意浏览器登录，并恢复近四个月的对话与学习路径。" : "登录后将恢复此账号近四个月的对话与学习路径。"}</p>
+    <form id="login-form" class="login-form"><label>用户名<input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="3—32 位用户名" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><p id="login-message" class="login-message">${isRegister ? "用户名注册后不可与其他账号重复。" : "没有账号请先注册；已有本机旧记录会在本次登录后迁移。"}</p><button type="submit">${isRegister ? "注册并进入" : "登录"} <span>→</span></button></form>
+    <p class="login-foot">${isRegister ? "已有账号？" : "还没有账号？"} <button type="button" class="auth-switch" data-auth-mode="${isRegister ? "login" : "register"}">${isRegister ? "去登录" : "去注册"}</button></p>
   </section></main>`;
+  document.querySelector(".login-back").addEventListener("click", landing);
+  document.querySelector(".auth-switch").addEventListener("click", () => login(roleId, document.querySelector(".auth-switch").dataset.authMode));
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const username = document.querySelector("#login-username").value.trim();
@@ -50,7 +59,7 @@ function login(roleId) {
     const submit = event.currentTarget.querySelector("button");
     submit.disabled = true;
     try {
-      const result = await signIn(username, password);
+      const result = await signIn(username, password, mode);
       if (!result.ok) { note.textContent = result.message; note.classList.add("warning"); return; }
       workspace(roleId);
     } catch { note.textContent = "暂时无法读取本地账户信息，请检查浏览器存储权限。"; note.classList.add("warning"); }
@@ -221,14 +230,15 @@ async function getReply(question, service, files = [], onDelta) {
       user: visitorId,
       conversation_id: getConversation(service.id),
   };
-  const options = { method: "POST" };
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const options = { method: "POST", headers: token ? { "Authorization": `Bearer ${token}` } : {} };
   if (service.id === "grading") {
     const form = new FormData();
     Object.entries(payload).forEach(([key, value]) => form.append(key, value));
     files.forEach((file) => form.append("files", file, file.name));
     options.body = form;
   } else {
-    options.headers = { "Content-Type": "application/json" };
+    options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(payload);
   }
   const response = await fetch(`${apiUrl.replace(/\/$/, "")}/api/chat`, options);
@@ -342,20 +352,117 @@ async function passwordHash(password) {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-async function signIn(username, password) {
+function workerUrl() { return window.COURSE_AGENT_CONFIG?.apiUrl?.trim() || ""; }
+
+async function workerJson(path, options = {}) {
+  const apiUrl = workerUrl();
+  if (!apiUrl) throw new Error("课程服务尚未连接，无法同步账号信息。");
+  const response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, options);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error || "请求失败，请稍后重试。");
+    error.status = response.status;
+    throw error;
+  }
+  return result;
+}
+
+async function signIn(username, password, mode = "login") {
   const id = username.toLocaleLowerCase("zh-CN");
   const accounts = getAccounts();
   const hash = await passwordHash(password);
-  if (accounts[id] && accounts[id].passwordHash !== hash) return { ok: false, message: "用户名或密码不正确。" };
-  if (!accounts[id]) {
-    accounts[id] = { username, passwordHash: hash, createdAt: Date.now() };
+  const apiUrl = workerUrl();
+  if (!apiUrl) {
+    if (mode === "register" && accounts[id]) return { ok: false, message: "该用户名已注册，请直接登录。" };
+    if (mode === "login" && (!accounts[id] || accounts[id].passwordHash !== hash)) return { ok: false, message: "用户名或密码不正确。" };
+    if (!accounts[id]) accounts[id] = { username, passwordHash: hash, createdAt: Date.now() };
     localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+    localStorage.setItem(SESSION_KEY, id);
+    return { ok: true };
   }
+
+  let remote;
+  try {
+    remote = await workerJson(`/api/auth/${mode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password_hash: hash }),
+    });
+  } catch (error) {
+    // Migrate accounts created by the earlier browser-only version on their first login.
+    if (mode === "login" && error.status === 404 && accounts[id]?.passwordHash === hash) {
+      try {
+        remote = await workerJson("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password_hash: hash }),
+        });
+      } catch (migrationError) {
+        return { ok: false, message: migrationError.message || "旧账号迁移失败，请稍后重试。" };
+      }
+    } else {
+      return { ok: false, message: error.message || "登录失败，请稍后重试。" };
+    }
+  }
+
+  accounts[id] = { username: remote.user || username, passwordHash: hash, createdAt: accounts[id]?.createdAt || Date.now() };
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
   localStorage.setItem(SESSION_KEY, id);
+  localStorage.setItem(AUTH_TOKEN_KEY, remote.token);
+  if (remote.state) restoreUserState(remote.state);
+  else scheduleStateSync();
   return { ok: true };
 }
 
-function signOut() { localStorage.removeItem(SESSION_KEY); }
+function signOut() {
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+function collectUserState() {
+  const values = {};
+  USER_STATE_SUFFIXES.forEach((suffix) => {
+    const value = localStorage.getItem(accountKey(suffix));
+    if (value !== null) values[suffix] = value;
+  });
+  return { version: 1, values };
+}
+
+function restoreUserState(state) {
+  const values = state && typeof state === "object" ? state.values : null;
+  if (!values || typeof values !== "object") return;
+  USER_STATE_SUFFIXES.forEach((suffix) => {
+    const value = values[suffix];
+    if (typeof value === "string") localStorage.setItem(accountKey(suffix), value);
+  });
+}
+
+function scheduleStateSync() {
+  if (!workerUrl() || !getCurrentUser() || !localStorage.getItem(AUTH_TOKEN_KEY)) return;
+  window.clearTimeout(stateSyncTimer);
+  stateSyncTimer = window.setTimeout(syncUserState, 600);
+}
+
+async function syncUserState() {
+  if (stateSyncInFlight) { stateSyncQueued = true; return; }
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (!token || !getCurrentUser()) return;
+  stateSyncInFlight = true;
+  try {
+    await workerJson("/api/user-state", {
+      method: "PUT",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ state: collectUserState() }),
+    });
+  } catch { /* Local history remains available and the next change retries synchronization. */ }
+  finally {
+    stateSyncInFlight = false;
+    if (stateSyncQueued) {
+      stateSyncQueued = false;
+      scheduleStateSync();
+    }
+  }
+}
 
 function retentionCutoff() {
   const cutoff = new Date();
@@ -378,11 +485,13 @@ function getConversation(serviceId) {
 
 function saveConversation(serviceId, conversationId) {
   localStorage.setItem(accountKey(`conversation-${serviceId}`), JSON.stringify({ id: conversationId, updatedAt: Date.now() }));
+  scheduleStateSync();
 }
 
 function clearConversation(serviceId) {
   localStorage.removeItem(accountKey(`conversation-${serviceId}`));
   localStorage.removeItem(accountKey(`history-${serviceId}`));
+  scheduleStateSync();
 }
 
 function getChatHistory(serviceId) {
@@ -402,6 +511,7 @@ function appendChatHistory(serviceId, role, content) {
   try { localStorage.setItem(key, JSON.stringify(history)); }
   catch { try { localStorage.setItem(key, JSON.stringify(history.slice(-30))); } catch { /* 浏览器存储不可用时不影响聊天 */ } }
   if (role === "user" && ["study", "personal"].includes(serviceId)) appendLearningEvent(serviceId, content, createdAt);
+  scheduleStateSync();
 }
 
 function appendLearningEvent(serviceId, content, createdAt) {

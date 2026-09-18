@@ -7,6 +7,34 @@ const SERVICE_KEYS = {
 };
 
 const inputFormCache = new Map();
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const USERNAME_PATTERN = /^[\u4e00-\u9fa5a-zA-Z0-9_-]{3,32}$/;
+
+function normalizedUsername(value) {
+  const username = String(value || "").trim();
+  return USERNAME_PATTERN.test(username) ? username.toLocaleLowerCase("zh-CN") : "";
+}
+
+function sessionToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function sessionUser(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token || !env.COURSE_AGENT_DATA) return null;
+  return env.COURSE_AGENT_DATA.get(`session:${token}`, "json");
+}
+
+async function createSession(env, account) {
+  const token = sessionToken();
+  await env.COURSE_AGENT_DATA.put(`session:${token}`, JSON.stringify({ id: account.id, username: account.username }), {
+    expirationTtl: SESSION_TTL_SECONDS,
+  });
+  return token;
+}
 
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin") || "";
@@ -16,8 +44,8 @@ function corsHeaders(request, env) {
     .filter(Boolean);
   return {
     "Access-Control-Allow-Origin": allowed.includes(origin) ? origin : allowed[0],
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
     "Vary": "Origin",
   };
 }
@@ -111,6 +139,60 @@ export default {
     const headers = corsHeaders(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     if (url.pathname === "/") return json(request, env, { service: "data-science-course-agent", status: "ok" });
+
+    if (url.pathname.startsWith("/api/auth/") && request.method === "POST") {
+      if (!env.COURSE_AGENT_DATA) return json(request, env, { error: "账户存储尚未配置。" }, 503);
+      let payload;
+      try { payload = await request.json(); }
+      catch { return json(request, env, { error: "请求格式不正确。" }, 400); }
+      const id = normalizedUsername(payload.username);
+      const passwordHash = String(payload.password_hash || "");
+      if (!id || !/^[a-f0-9]{64}$/i.test(passwordHash)) {
+        return json(request, env, { error: "用户名或密码格式无效。" }, 400);
+      }
+      const key = `account:${id}`;
+      const existing = await env.COURSE_AGENT_DATA.get(key, "json");
+      let account;
+      if (url.pathname === "/api/auth/register") {
+        if (existing) return json(request, env, { error: "该用户名已注册，请直接登录。" }, 409);
+        account = { id, username: String(payload.username).trim(), passwordHash, createdAt: Date.now() };
+        await env.COURSE_AGENT_DATA.put(key, JSON.stringify(account));
+      } else if (url.pathname === "/api/auth/login") {
+        if (!existing) return json(request, env, { error: "账号不存在，请先注册。" }, 404);
+        if (existing.passwordHash !== passwordHash) return json(request, env, { error: "用户名或密码不正确。" }, 401);
+        account = existing;
+      } else {
+        return json(request, env, { error: "接口不存在。" }, 404);
+      }
+      const state = await env.COURSE_AGENT_DATA.get(`state:${id}`, "json");
+      return json(request, env, {
+        user: account.username,
+        token: await createSession(env, account),
+        state: state?.data || null,
+      });
+    }
+
+    if (url.pathname === "/api/user-state") {
+      if (!env.COURSE_AGENT_DATA) return json(request, env, { error: "账户存储尚未配置。" }, 503);
+      const user = await sessionUser(request, env);
+      if (!user) return json(request, env, { error: "登录已过期，请重新登录。" }, 401);
+      const key = `state:${user.id}`;
+      if (request.method === "GET") {
+        const state = await env.COURSE_AGENT_DATA.get(key, "json");
+        return json(request, env, { state: state?.data || null });
+      }
+      if (request.method === "PUT") {
+        let payload;
+        try { payload = await request.json(); }
+        catch { return json(request, env, { error: "请求格式不正确。" }, 400); }
+        const serialized = JSON.stringify(payload.state || {});
+        if (serialized.length > 5 * 1024 * 1024) return json(request, env, { error: "学习记录过大，无法保存。" }, 413);
+        await env.COURSE_AGENT_DATA.put(key, JSON.stringify({ data: payload.state || {}, updatedAt: Date.now() }));
+        return json(request, env, { ok: true });
+      }
+      return json(request, env, { error: "接口不存在。" }, 404);
+    }
+
     if (url.pathname === "/api/parameters" && request.method === "GET") {
       const service = url.searchParams.get("service") || "";
       const keyName = SERVICE_KEYS[service];
@@ -153,9 +235,13 @@ export default {
       return json(request, env, { error: "请求格式不正确。" }, 400);
     }
 
+    const authenticatedUser = await sessionUser(request, env);
+    if (request.headers.get("Authorization") && !authenticatedUser) {
+      return json(request, env, { error: "登录已过期，请重新登录。" }, 401);
+    }
     const service = String(payload.service || "");
     const query = String(payload.query || "").trim();
-    const user = String(payload.user || "").trim();
+    const user = authenticatedUser?.id || String(payload.user || "").trim();
     const keyName = SERVICE_KEYS[service];
     if (!keyName) return json(request, env, { error: "未知的课程服务。" }, 400);
     if (!query || query.length > 8000) return json(request, env, { error: "请输入 1 至 8000 个字符。" }, 400);
