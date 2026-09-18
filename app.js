@@ -23,7 +23,7 @@ let isSending = false;
 let selectedFiles = [];
 const MAX_GRADING_FILES = 5;
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
-const HISTORY_TTL = 3 * 24 * 60 * 60 * 1000;
+const RETENTION_MONTHS = 4;
 const ACCOUNTS_KEY = "ds-course-agent-accounts-v1";
 const SESSION_KEY = "ds-course-agent-session-v1";
 
@@ -37,7 +37,7 @@ function login(roleId) {
   document.title = "登录 · 数据科学导论";
   app.innerHTML = `<main class="login-page"><div class="login-photo" aria-hidden="true"></div><section class="login-card">
     ${brand()}<p class="login-kicker">${role.english} · SECURE ENTRY</p><h1>进入${role.name}</h1><p class="login-intro">使用用户名和密码进入课程智能体。首次使用时，系统会创建该唯一用户名。</p>
-    <form id="login-form" class="login-form"><label>用户名<input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="3—32 位用户名" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><p id="login-message" class="login-message">登录后将为你保留近三天的对话与学习路径。</p><button type="submit">登录 / 首次创建 <span>→</span></button></form>
+    <form id="login-form" class="login-form"><label>用户名<input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="3—32 位用户名" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="至少 6 位" required></label><p id="login-message" class="login-message">登录后将为你保留近四个月的对话与学习路径。</p><button type="submit">登录 / 首次创建 <span>→</span></button></form>
     <p class="login-foot">仅需用户名与密码 · 用户名在本浏览器中唯一</p>
   </section></main>`;
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
@@ -86,7 +86,7 @@ function workspace(roleId, serviceId, view = "chat") {
       <div class="role-heading"><small>${role.english}</small><h2>${role.name}</h2><p>${role.desc}</p></div>
       <div class="nav-label"><span>课程服务</span><small>${String(role.services.length).padStart(2, "0")}</small></div>
       <nav class="service-nav" aria-label="智能体服务">${role.services.map((item) => `<button class="service-item ${view === "chat" && item.id === service.id ? "active" : ""}" data-service="${item.id}"><b>${item.mark}</b><span><strong>${item.name}</strong><small>${item.desc}</small></span><i>→</i></button>`).join("")}</nav>
-      ${roleId === "student" ? `<div class="nav-label nav-label--path"><span>学习档案</span><small>03 DAYS</small></div><button class="learning-path-link ${view === "path" ? "active" : ""}" data-learning-path><b>路</b><span><strong>用户学习路径</strong><small>查看近期知识学习轨迹</small></span><i>→</i></button>` : ""}
+      ${roleId === "student" ? `<div class="nav-label nav-label--path"><span>学习档案</span><small>04 MONTHS</small></div><button class="learning-path-link ${view === "path" ? "active" : ""}" data-learning-path><b>路</b><span><strong>用户学习路径</strong><small>查看近期知识学习轨迹</small></span><i>→</i></button>` : ""}
       <div class="sidebar-foot"><span>DS · COURSE AGENT</span><small>Powered by Dify workflow</small></div>
     </div></aside>
     <section class="content"><header class="content-header"><button class="mobile-menu" aria-label="打开服务菜单">☰</button><div><p>${role.name} / COURSE SERVICE</p><h1>${view === "path" ? "用户学习路径" : service.name}</h1></div><div class="header-actions">${view === "chat" ? `<button class="reset-chat" type="button" title="清除当前栏目的对话">重新开始</button>` : ""}<span class="current-user">${escapeHtml(getCurrentUser())}</span><button class="logout" type="button">退出</button><div class="agent-state ${apiUrl ? "connected" : ""}"><i></i><span>${apiUrl ? "Dify 服务已连接" : "界面演示模式"}</span></div></div></header>${view === "path" ? learningPath() : demoChat(service)}</section>
@@ -106,8 +106,8 @@ function demoChat(service) {
 function learningPath() {
   const events = getLearningEvents();
   const serviceNames = Object.fromEntries(roles.student.services.map((service) => [service.id, service.name]));
-  const nodes = events.length ? events.map((event, index) => `<article class="path-node"><span class="path-index">${String(index + 1).padStart(2, "0")}</span><div><small>${formatPathTime(event.createdAt)} · ${serviceNames[event.serviceId] || "学习记录"}</small><h2>${escapeHtml(event.topic)}</h2><p>${index === 0 ? "从这次提问开始建立学习线索。" : "基于最近的提问，继续延展知识网络。"}</p></div></article>`).join("") : `<div class="path-empty"><span>◇</span><h2>学习路径将从第一次提问开始</h2><p>在“智能伴学中心”或“个性化学习”中提问后，系统会保留近三天的知识学习轨迹。</p><button type="button" data-start-learning>去智能伴学中心</button></div>`;
-  return `<section class="learning-path"><div class="path-hero"><p>RECENT LEARNING · 03 DAYS</p><h1>${escapeHtml(getCurrentUser())} 的知识学习路径</h1><span>根据近三天在学生端的提问自动整理，共记录 ${events.length} 个学习节点。</span></div><div class="path-line" aria-label="最近知识学习路径">${nodes}</div><p class="path-note">仅保留近三天记录；超过期限的对话和学习节点会自动清除。</p></section>`;
+  const nodes = events.length ? events.map((event, index) => `<article class="path-node"><span class="path-index">${String(index + 1).padStart(2, "0")}</span><div><small>${formatPathTime(event.createdAt)} · ${serviceNames[event.serviceId] || "学习记录"}</small><h2>${escapeHtml(event.topic)}</h2><p>${index === 0 ? "从这次提问开始建立学习线索。" : "基于最近的提问，继续延展知识网络。"}</p></div></article>`).join("") : `<div class="path-empty"><span>◇</span><h2>学习路径将从第一次提问开始</h2><p>在“智能伴学中心”或“个性化学习”中提问后，系统会保留近四个月的知识学习轨迹。</p><button type="button" data-start-learning>去智能伴学中心</button></div>`;
+  return `<section class="learning-path"><div class="path-hero"><p>RECENT LEARNING · 04 MONTHS</p><h1>${escapeHtml(getCurrentUser())} 的知识学习路径</h1><span>根据近四个月在学生端的提问自动整理，共记录 ${events.length} 个学习节点。</span></div><div class="path-line" aria-label="最近知识学习路径">${nodes}</div><p class="path-note">仅保留近四个月记录；超过期限的对话和学习节点会自动清除。</p></section>`;
 }
 
 function formatPathTime(value) {
@@ -299,12 +299,20 @@ async function signIn(username, password) {
 
 function signOut() { localStorage.removeItem(SESSION_KEY); }
 
+function retentionCutoff() {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - RETENTION_MONTHS);
+  return cutoff.getTime();
+}
+
+function isWithinRetention(value) { return Number(value) >= retentionCutoff(); }
+
 function getVisitorId() { return getCurrentUser(); }
 
 function getConversation(serviceId) {
   try {
     const saved = JSON.parse(localStorage.getItem(accountKey(`conversation-${serviceId}`)) || "null");
-    if (saved?.id && Date.now() - saved.updatedAt < HISTORY_TTL) return saved.id;
+    if (saved?.id && isWithinRetention(saved.updatedAt)) return saved.id;
   } catch { /* A malformed or expired identifier starts a fresh Dify conversation. */ }
   localStorage.removeItem(accountKey(`conversation-${serviceId}`));
   return "";
@@ -322,9 +330,8 @@ function clearConversation(serviceId) {
 function getChatHistory(serviceId) {
   const key = accountKey(`history-${serviceId}`);
   try {
-    const cutoff = Date.now() - HISTORY_TTL;
     const value = JSON.parse(localStorage.getItem(key) || "[]");
-    const history = Array.isArray(value) ? value.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string" && Number(item.createdAt) >= cutoff) : [];
+    const history = Array.isArray(value) ? value.filter((item) => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string" && isWithinRetention(item.createdAt)) : [];
     if (history.length !== (Array.isArray(value) ? value.length : 0)) localStorage.setItem(key, JSON.stringify(history));
     return history;
   } catch { return []; }
@@ -351,9 +358,8 @@ function appendLearningEvent(serviceId, content, createdAt) {
 function getLearningEvents() {
   const key = accountKey("learning-path");
   try {
-    const cutoff = Date.now() - HISTORY_TTL;
     const events = JSON.parse(localStorage.getItem(key) || "[]");
-    const recent = Array.isArray(events) ? events.filter((event) => event && typeof event.topic === "string" && Number(event.createdAt) >= cutoff) : [];
+    const recent = Array.isArray(events) ? events.filter((event) => event && typeof event.topic === "string" && isWithinRetention(event.createdAt)) : [];
     if (recent.length !== (Array.isArray(events) ? events.length : 0)) localStorage.setItem(key, JSON.stringify(recent));
     return recent;
   } catch { return []; }
